@@ -1,134 +1,63 @@
 ﻿// Copyright (c) Microsoft. All rights reserved.
 // Licensed under the MIT license. See LICENSE file in the project root for full license information.
 
-using System;
-using System.Diagnostics;
+using System.Collections.Generic;
 using System.Diagnostics.ContractsLight;
 using System.IO;
-using System.Text;
-using System.Threading.Tasks;
 using BuildXL.Utilities;
 
 namespace BuildXL.Processes
 {
     /// <summary>
-    /// Sanboxed process that will be executed by an external tool.
+    /// Class that wraps the tool for executing sandboxed process externally.
     /// </summary>
-    public class ExternalToolSandboxedProcess : ExternalSandboxedProcess
+    public class ExternalToolSandboxedProcessExecutor
     {
-        private readonly ExternalToolSandboxedProcessExecutor m_tool;
-
-        private readonly StringBuilder m_output = new StringBuilder();
-        private readonly StringBuilder m_error = new StringBuilder();
-
-        private AsyncProcessExecutor m_processExecutor;
+        /// <summary>
+        /// Relative path to the default tool.
+        /// </summary>
+        public const string DefaultToolRelativePath = @"SandboxedProcessExecutor.exe";
 
         /// <summary>
-        /// Creates an instance of <see cref="ExternalToolSandboxedProcess"/>.
+        /// Tool path.
         /// </summary>
-        public ExternalToolSandboxedProcess(SandboxedProcessInfo sandboxedProcessInfo, ExternalToolSandboxedProcessExecutor tool)
-            : base(sandboxedProcessInfo)
-        {
-            Contract.Requires(tool != null);
-            m_tool = tool;
-        }
-
-        /// <inheritdoc />
-        public override int ProcessId => Process?.Id ?? -1;
+        public string ExecutablePath { get; }
 
         /// <summary>
-        /// Underlying managed <see cref="Process"/> object.
+        /// Scopes that need to be untracked.
         /// </summary>
-        public Process Process => m_processExecutor?.Process;
+        public IEnumerable<string> UntrackedScopes { get; }
 
-        /// <inheritdoc />
-        public override string StdOut => m_processExecutor?.StdOutCompleted ?? false ? m_output.ToString() : string.Empty;
-
-        /// <inheritdoc />
-        public override string StdErr => m_processExecutor?.StdErrCompleted ?? false ? m_error.ToString() : string.Empty;
-
-        /// <inheritdoc />
-        public override int? ExitCode => m_processExecutor.ExitCompleted ? Process?.ExitCode : default;
-
-        /// <inheritdoc />
-        public override void Dispose()
+        /// <summary>
+        /// Creates an instance of <see cref="ExternalToolSandboxedProcessExecutor"/>
+        /// </summary>
+        public ExternalToolSandboxedProcessExecutor(string executablePath)
         {
-            m_processExecutor?.Dispose();
-        }
+            Contract.Requires(!string.IsNullOrWhiteSpace(executablePath));
+            ExecutablePath = executablePath;
 
-        /// <inheritdoc />
-        public override ulong? GetActivePeakMemoryUsage() => m_processExecutor?.GetActivePeakMemoryUsage();
-
-        /// <inheritdoc />
-        public override async Task<SandboxedProcessResult> GetResultAsync()
-        {
-            Contract.Requires(m_processExecutor != null);
-
-            await m_processExecutor.WaitForExitAsync();
-            await m_processExecutor.WaitForStdOutAndStdErrAsync();
-
-            if (m_processExecutor.TimedOut || m_processExecutor.Killed)
+            if (!File.Exists(ExecutablePath))
             {
-                // If timed out/killed, then sandboxed process result may have not been deserialized yet.
-                return CreateResultForFailure();
+                throw new BuildXLException($"Cannot find file '{ExecutablePath}' needed to externally execute process. Did you build all configurations?", rootCause: ExceptionRootCause.MissingRuntimeDependency);
             }
 
-            if (Process.ExitCode != 0)
-            {
-                return CreateResultForFailure();
-            }
+            string directory = Path.GetDirectoryName(executablePath);
 
-            return DeserializeSandboxedProcessResultFromFile();
+            // If the pip run by this sandboxed process executor tool also executes Detours, then that pip may access
+            // DetoursServices.pdb that is linked with this tool. Thus, we need to tell the pip to untrack the directories
+            // where DetoursServices are located.
+            UntrackedScopes = new[] { Path.Combine(directory, "X86"), Path.Combine(directory, "X64") };
         }
 
-        /// <inheritdoc />
-        public override Task KillAsync() => KillProcessExecutorAsync(m_processExecutor);
-
-        /// <inheritdoc />
-        public override void Start()
+        /// <summary>
+        /// Creates arguments for the tool to execute.
+        /// </summary>
+        public string CreateArguments(string sandboxedProcessInfoInputFile, string sandboxedProcessResultOutputFile)
         {
-            SerializeSandboxedProcessInfoToFile();
+            Contract.Requires(!string.IsNullOrWhiteSpace(sandboxedProcessInfoInputFile));
+            Contract.Requires(!string.IsNullOrWhiteSpace(sandboxedProcessResultOutputFile));
 
-            var process = new Process
-            {
-                StartInfo = new ProcessStartInfo
-                {
-                    FileName = m_tool.ExecutablePath,
-                    Arguments = m_tool.CreateArguments(GetSandboxedProcessInfoFile(), GetSandboxedProcessResultsFile()),
-                    WorkingDirectory = SandboxedProcessInfo.WorkingDirectory,
-                    RedirectStandardError = true,
-                    RedirectStandardOutput = true,
-                    UseShellExecute = false,
-                    CreateNoWindow = true
-                },
-
-                EnableRaisingEvents = true
-            };
-
-            m_processExecutor = new AsyncProcessExecutor(
-                process,
-                TimeSpan.FromMilliseconds(-1), // Timeout should only be applied to the process that the external tool executes.
-                line => AppendLineIfNotNull(m_output, line),
-                line => AppendLineIfNotNull(m_error, line),
-                SandboxedProcessInfo.Provenance,
-                message => LogExternalExecution(message));
-
-            m_processExecutor.Start();
-        }
-
-        private SandboxedProcessResult CreateResultForFailure()
-        {
-            string output = m_output.ToString();
-            string error = m_error.ToString();
-            string hint = Path.GetFileNameWithoutExtension(m_tool.ExecutablePath);
-
-            return CreateResultForFailure(
-                exitCode: m_processExecutor.TimedOut ? ExitCodes.Timeout : Process.ExitCode,
-                killed: m_processExecutor.Killed,
-                timedOut: m_processExecutor.TimedOut,
-                output: output,
-                error: error,
-                hint: hint);
+            return $"/sandboxedProcessInfo:\"{sandboxedProcessInfoInputFile}\" /sandboxedProcessResult:\"{sandboxedProcessResultOutputFile}\"";
         }
     }
 }

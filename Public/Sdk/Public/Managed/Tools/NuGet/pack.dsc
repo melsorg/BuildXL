@@ -204,10 +204,10 @@ function createNuSpecFile(
     // Process the flattened opaque directories
     for (let opaque of flattened.flattenedOpaques.toArray())
     {
-        dependencies = dependencies.push(opaque[1].opaque);
+        dependencies = dependencies.push(opaque[1]);
         fileElements = fileElements.push(
             Xml.elem("file",
-                Xml.attr("src", [opaque[1].opaque.path, "\\**"]),
+                Xml.attr("src", [opaque[1].path, "\\**"]),
                 Xml.attr("target", opaque[0])
             )
         );
@@ -301,35 +301,6 @@ export function createAssemblyLayout(assembly: Managed.Assembly) : Deployment.De
                     assembly.compile || emptyFile,
                 ]
             }
-        ]
-    };
-}
-
-@@public
-export function createAssemblyLayoutWithSpecificRuntime(assembly: Managed.Assembly, runtime: string, includeInRef: boolean) : Deployment.Definition {
-    // When the assembly is undefined, return empty deployment.
-    if (assembly === undefined) {
-        return {
-            contents: []
-        };
-    }
-
-    return {
-        contents: [
-            {
-                subfolder: r`runtimes/${runtime}/lib/${assembly.targetFramework}`,
-                contents: [
-                    assembly.runtime || emptyFile,
-                ]
-            },
-            ... includeInRef ? [
-                {
-                    subfolder: r`ref/${assembly.targetFramework}`,
-                    contents: [
-                        assembly.compile || emptyFile,
-                    ]
-                }
-            ] : []
         ]
     };
 }
