@@ -8,13 +8,16 @@ const isMicrosoftInternal = Environment.getFlag("[Sdk.BuildXL]microsoftInternal"
 // Or they contain code which is internal and can't be open sourced due to tying into Microsoft internal systems.
 // The dependent code is still open sourced, but not compiled in the public repo.
 export const pkgs = isMicrosoftInternal ? [
+    { id: "Bond.NET", version: "3.2.0", forceFullFrameworkQualifiersOnly: true },
+    { id: "Bond.Core.NET", version: "3.2.0" },
+    { id: "Bond.Rpc.NET", version: "3.2.0" },
     { id: "BuildXL.DeviceMap", version: "0.0.1" },
 
     // Runtime dependencies used for macOS deployments
-    { id: "runtime.osx-x64.BuildXL", version: "2.0.99" },
+    { id: "runtime.osx-x64.BuildXL", version: "1.97.99" },
     { id: "Aria.Cpp.SDK", version: "8.5.6" },
 
-    { id: "CB.QTest", version: "19.9.6.1149" },
+    { id: "CB.QTest", version: "19.7.18.221046" },
 
     { id: "BuildXL.Tracing.AriaTenantToken", version: "1.0.0" },
 
@@ -38,17 +41,14 @@ export const pkgs = isMicrosoftInternal ? [
     { id: "Drop.RemotableClient.Interfaces", version: "17.150.28901-buildid9382555", dependentPackageIdsToSkip: ["*"] },
     { id: "ItemStore.Shared", version: "17.150.28901-buildid9382555", dependentPackageIdsToSkip: ["*"], dependentPackageIdsToIgnore: ["BuildXL.Cache.Hashing"] },
     { id: "Microsoft.VisualStudio.Services.BlobStore.Client.Cache", version: "17.150.28901-buildid9382555", dependentPackageIdsToSkip: ["*"], dependentPackageIdsToIgnore: ["BuildXL.Cache.Hashing", "BuildXL.Cache.Interfaces", "BuildXL.Cache.Libraries", "BuildXL.library.forAzDev"] },
-    { id: "Microsoft.Windows.Debuggers.SymstoreInterop", version: "1.0.1" },
-    { id: "Symbol.App.Core", version: "17.150.28901-buildid9382555", dependentPackageIdsToSkip: ["*"], dependentPackageIdsToIgnore: ["BuildXL.Cache.Hashing", "BuildXL.Cache.Interfaces", "BuildXL.Cache.Libraries", "BuildXL.library.forAzDev"] },
-    { id: "Symbol.Client", version: "17.150.28901-buildid9382555", dependentPackageIdsToSkip: ["*"] },
-
+    { id: "Microsoft.Windows.Debuggers.SymstoreInterop", version: "0.61" },
 
     // Internal pacakged version to avoid downloading from the web but the trusted stable internal feed:
     { id: "NodeJs", version: "8.12.0-noTest" },
     { id: "PowerShell.Core", version: "6.1.0" },
 
     // Combined runtimes
-    { id: "Dotnet-Runtime", version: "5.0.2" },
+    { id: "Dotnet-Runtime", version: "5.0.0" },
 
 ] : [
 
@@ -61,6 +61,8 @@ export const pkgs = isMicrosoftInternal ? [
 export const resolver = {
     kind: "SourceResolver",
     modules: [
+        f`private/InternalSdk/Bond/module.config.dsc`,
+        f`private/InternalSdk/Bond.NET/module.config.dsc`,
         f`private/InternalSdk/BuildXL.DeviceMap/module.config.dsc`,
         f`private/InternalSdk/CB.QTest/module.config.dsc`,
         ...addIf(isMicrosoftInternal,

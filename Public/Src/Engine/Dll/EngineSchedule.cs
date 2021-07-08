@@ -35,7 +35,6 @@ using BuildXL.Utilities.Qualifier;
 using BuildXL.Utilities.Tasks;
 using BuildXL.Utilities.Tracing;
 using BuildXL.Utilities.VmCommandProxy;
-using BuildXL.ViewModel;
 using JetBrains.Annotations;
 using static BuildXL.Utilities.FormattableStringEx;
 using Logger = BuildXL.Engine.Tracing.Logger;
@@ -211,12 +210,14 @@ namespace BuildXL.Engine
                 graphSemistableFingerprint: pipGraph.SemistableFingerprint,
                 environmentFingerprint: configuration.Schedule.EnvironmentFingerprint);
 
-            AsyncLazy<PipRuntimeTimeTable> runtimeTable = Lazy.CreateAsync(() => TryLoadRunningTimeTable(
+            Task<PipRuntimeTimeTable> runtimeTableTask = TryLoadRunningTimeTable(
                 loggingContext,
                 context,
                 configuration,
                 Task.FromResult<Possible<EngineCache>>(scheduleCache),
-                performanceDataFingerprint: performanceDataFingerprint));
+                performanceDataFingerprint: performanceDataFingerprint);
+            // Make sure the result of the task is observed
+            runtimeTableTask.Forget();
 
             PipTwoPhaseCache twoPhaseCache = InitTwoPhaseCache(
                 loggingContext,
@@ -224,7 +225,10 @@ namespace BuildXL.Engine
                 configuration,
                 scheduleCache,
                 performanceDataFingerprint: performanceDataFingerprint,
-                pathExpander: mountPathExpander);
+                pathExpander: mountPathExpander,
+                // Need to wait for completion of loading because graph will be serialized and loading causes
+                // addition to graph data structures (path table and string table) which is not permitted during serialization
+                waitForLoadCompletion: true);
 
             var whiteList = new FileAccessWhitelist(context);
             try
@@ -267,7 +271,7 @@ namespace BuildXL.Engine
                     configuration,
                     tempCleaner: tempCleaner,
                     loggingContext: loggingContext,
-                    runningTimeTable: runtimeTable,
+                    runningTimeTableTask: runtimeTableTask,
                     fileAccessWhitelist: whiteList,
                     directoryMembershipFingerprinterRules: directoryMembershipFingerprinterRules,
                     journalState: journalState,
@@ -411,7 +415,8 @@ namespace BuildXL.Engine
             IConfiguration configuration,
             EngineCache cache,
             ContentFingerprint performanceDataFingerprint,
-            PathExpander pathExpander)
+            PathExpander pathExpander,
+            bool waitForLoadCompletion)
         {
             if (configuration.Cache.HistoricMetadataCache == true)
             {
@@ -429,6 +434,8 @@ namespace BuildXL.Engine
                             return TryLoadHistoricMetadataCache(loggingContext, hmc, context, configuration, cache, performanceDataFingerprint);
                         },
                         logDirectoryLocation: configuration.Logging.HistoricMetadataCacheLogDirectory);
+
+                    historicMetadataCache.StartLoading(waitForCompletion: waitForLoadCompletion);
 
                     return historicMetadataCache;
                 }
@@ -1021,7 +1028,6 @@ namespace BuildXL.Engine
             rootFilter = null;
             FilterParserError error;
 
-            var canonicalize = configuration.Schedule.CanonicalizeFilterOutputs;
             var filterUnParsed = commandLineConfiguration.Filter;
             var defaultFilter = configuration.Engine.DefaultFilter;
             var implicitFilters = commandLineConfiguration.Startup.ImplicitFilters;
@@ -1045,7 +1051,7 @@ namespace BuildXL.Engine
                 }
 
                 // Otherwise we parse the actual filter
-                FilterParser parser = new FilterParser(context, mountResolver, filterUnParsed, canonicalize: canonicalize);
+                FilterParser parser = new FilterParser(context, mountResolver, filterUnParsed);
                 if (!parser.TryParse(out rootFilter, out error))
                 {
                     Logger.Log.ConfigFailedParsingCommandLinePipFilter(
@@ -1081,7 +1087,7 @@ namespace BuildXL.Engine
                     }
                 }
 
-                FilterParser parser = new FilterParser(context, mountResolver, sb.ToString(), canonicalize: canonicalize);
+                FilterParser parser = new FilterParser(context, mountResolver, sb.ToString());
 
                 if (!parser.TryParse(out rootFilter, out error))
                 {
@@ -1097,7 +1103,7 @@ namespace BuildXL.Engine
             else if (!string.IsNullOrWhiteSpace(defaultFilter))
             {
                 // Then fall back to the default filter
-                FilterParser parser = new FilterParser(context, mountResolver, defaultFilter, canonicalize: canonicalize);
+                FilterParser parser = new FilterParser(context, mountResolver, defaultFilter);
                 RootFilter parsedFilter;
                 if (!parser.TryParse(out parsedFilter, out error))
                 {
@@ -1415,7 +1421,7 @@ namespace BuildXL.Engine
         /// <summary>
         /// At the end of the build this logs some important stats about the build
         /// </summary>
-        public SchedulerPerformanceInfo LogStats(LoggingContext loggingContext, [CanBeNull] BuildSummary buildSummary)
+        public SchedulerPerformanceInfo LogStats(LoggingContext loggingContext)
         {
 #pragma warning disable SA1114 // Parameter list must follow declaration
 
@@ -1440,7 +1446,7 @@ namespace BuildXL.Engine
 #pragma warning restore SA1114 // Parameter list must follow declaration
             }
 
-            var schedulerPerformance = Scheduler.LogStats(loggingContext, buildSummary);
+            var schedulerPerformance = Scheduler.LogStats(loggingContext);
 
             // Log whitelist file statistics
             if (m_configFileState.FileAccessWhitelist != null && m_configFileState.FileAccessWhitelist.MatchedEntryCounts.Count > 0)
@@ -1574,7 +1580,7 @@ namespace BuildXL.Engine
                 graphSemistableFingerprint: semistableFingerprintOfGraphToReload,
                 environmentFingerprint: configuration.Schedule.EnvironmentFingerprint);
 
-            AsyncLazy<PipRuntimeTimeTable> runningTimeTable = Lazy.CreateAsync(
+            Task<PipRuntimeTimeTable> runningTimeTableTask = Task.Run(
                 () =>
                     TryLoadRunningTimeTable(
                         loggingContext,
@@ -1582,6 +1588,8 @@ namespace BuildXL.Engine
                         newConfiguration,
                         GetCacheForContext(engineCacheInitializationTask),
                         performanceDataFingerprint: performanceDataFingerprint));
+            // Make sure the result of the task is observed
+            runningTimeTableTask.Forget();
 
             // We try to wait on the cache near to last (we happen to track the first wait attempt on the cache relative to when it is actually ready).
             Possible<CacheInitializer> possibleCacheInitializer = await engineCacheInitializationTask;
@@ -1607,7 +1615,8 @@ namespace BuildXL.Engine
                     newConfiguration,
                     scheduleCache,
                     performanceDataFingerprint: performanceDataFingerprint,
-                    pathExpander: pathExpander);
+                    pathExpander: pathExpander,
+                    waitForLoadCompletion: false);
 
             await serializer.WaitForPendingDeserializationsAsync();
 
@@ -1642,7 +1651,7 @@ namespace BuildXL.Engine
                         loggingContext: loggingContext,
                         fileAccessWhitelist: configFileState.FileAccessWhitelist,
                         directoryMembershipFingerprinterRules: configFileState.DirectoryMembershipFingerprinterRules,
-                        runningTimeTable: runningTimeTable,
+                        runningTimeTableTask: runningTimeTableTask,
                         tempCleaner: tempCleaner,
                         performanceCollector: performanceCollector,
                         previousInputsSalt: previousOutputsSalt.Value,

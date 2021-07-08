@@ -20,7 +20,6 @@ using BuildXL.Processes;
 using BuildXL.Scheduler;
 using BuildXL.Scheduler.Filter;
 using BuildXL.Scheduler.Graph;
-using BuildXL.Scheduler.Tracing;
 using BuildXL.Storage;
 using BuildXL.Utilities;
 using BuildXL.Utilities.Collections;
@@ -54,8 +53,6 @@ namespace Test.BuildXL.Scheduler
 
         private PipGraph m_lastGraph;
 
-        public PipGraph LastGraph => m_lastGraph;
-
         private JournalState m_journalState;
 
         /// <summary>
@@ -79,7 +76,7 @@ namespace Test.BuildXL.Scheduler
             XAssert.IsTrue(Args.TryParseArguments(new[] { "/c:" + Path.Combine(TemporaryDirectory, "config.dc") }, Context.PathTable, null, out config), "Failed to construct arguments");
             Configuration = new CommandLineConfiguration(config);
 
-            Cache = InMemoryCacheFactory.Create();
+            Cache = OperatingSystemHelper.IsUnixOS ? InMemoryCacheFactory.Create() : MockCacheFactory.Create(CacheRoot);
 
             FileContentTable = FileContentTable.CreateNew();
 
@@ -310,9 +307,9 @@ namespace Test.BuildXL.Scheduler
         /// <summary>
         /// Creates and scheduled a <see cref="PipBuilder"/> constructed process
         /// </summary>
-        public ProcessWithOutputs CreateAndSchedulePipBuilder(IEnumerable<Operation> processOperations, IEnumerable<string> tags = null, string description = null, IDictionary<string, string> environmentVariables = null)
+        public ProcessWithOutputs CreateAndSchedulePipBuilder(IEnumerable<Operation> processOperations, IEnumerable<string> tags = null, string description = null)
         {
-            var pipBuilder = CreatePipBuilder(processOperations, tags, description, environmentVariables);
+            var pipBuilder = CreatePipBuilder(processOperations, tags, description);
             return SchedulePipBuilder(pipBuilder);
         }
 
@@ -403,7 +400,6 @@ namespace Test.BuildXL.Scheduler
             // .....................................................................................
 
             testHooks = testHooks ?? new SchedulerTestHooks();
-            testHooks.FingerprintStoreTestHooks = testHooks.FingerprintStoreTestHooks ?? new FingerprintStoreTestHooks() { MinimalIO = true };
             Contract.Assert(!(config.Engine.CleanTempDirectories && tempCleaner == null));
 
             using (var queue = new PipQueue(config.Schedule))
@@ -446,12 +442,7 @@ namespace Test.BuildXL.Scheduler
                 testScheduler.Start(localLoggingContext);
 
                 bool success = testScheduler.WhenDone().GetAwaiter().GetResult();
-
-                // Only save file change tracking information for incremental scheduling tests in order to reduce I/O
-                if (Configuration.Schedule.IncrementalScheduling)
-                {
-                    testScheduler.SaveFileChangeTrackerAsync(localLoggingContext).Wait();
-                }
+                testScheduler.SaveFileChangeTrackerAsync(localLoggingContext).Wait();
 
                 if (ShouldLogSchedulerStats)
                 {
@@ -459,7 +450,7 @@ namespace Test.BuildXL.Scheduler
                     // to write out the stats perf JSON file
                     var logsDir = config.Logging.LogsDirectory.ToString(Context.PathTable);
                     Directory.CreateDirectory(logsDir);
-                    testScheduler.LogStats(localLoggingContext, null);
+                    testScheduler.LogStats(localLoggingContext);
                 }
 
                 var runResult = new ScheduleRunResult
@@ -467,8 +458,9 @@ namespace Test.BuildXL.Scheduler
                     Graph = graph,
                     Config = config,
                     Success = success,
-                    RunData = testScheduler.RunData,
+                    PipResults = testScheduler.PipResults,
                     PipExecutorCounters = testScheduler.PipExecutionCounters,
+                    PathSets = testScheduler.PathSets,
                     ProcessPipCountersByFilter = testScheduler.ProcessPipCountersByFilter,
                     ProcessPipCountersByTelemetryTag = testScheduler.ProcessPipCountersByTelemetryTag,
                     SchedulerState = new SchedulerState(testScheduler)
